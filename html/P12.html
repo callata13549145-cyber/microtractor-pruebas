@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MICROTRACTOR — GPS + IMU + KALMAN Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f2f4a 100%);
+            color: #e0e7ff;
+            font-family: 'Monaco', 'Courier New', monospace;
+            overflow-x: hidden;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr;
+            grid-template-rows: auto auto 1fr;
+            gap: 12px;
+            padding: 12px;
+            min-height: 100vh;
+        }
+
+        header {
+            grid-column: 1 / -1;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            border-radius: 8px;
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(10px);
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        header h1 { font-size: 20px; color: #22c55e; text-shadow: 0 0 10px rgba(34, 197, 94, 0.5); }
+
+        .status-bar { display: flex; gap: 20px; align-items: center; font-size: 12px; flex-wrap: wrap; }
+        .status-item { display: flex; align-items: center; gap: 6px; }
+
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #ef4444; animation: pulse 2s infinite;
+        }
+        .status-dot.connected { background: #22c55e; box-shadow: 0 0 8px #22c55e; animation: none; }
+
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        .connection-dialog {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(15, 23, 42, 0.95);
+            border: 2px solid #22c55e; border-radius: 8px;
+            padding: 24px; z-index: 1000; min-width: 340px;
+        }
+        .connection-dialog.hidden { display: none; }
+        .connection-dialog h2 { color: #22c55e; margin-bottom: 16px; font-size: 18px; }
+
+        .input-group { margin-bottom: 12px; }
+        .input-group label { display: block; color: #94a3b8; font-size: 12px; margin-bottom: 4px; }
+        .input-group input {
+            width: 100%; padding: 8px;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: #22c55e; border-radius: 4px; font-family: monospace;
+        }
+
+        .button-group-dialog { display: flex; gap: 8px; margin-top: 16px; }
+        .button-group-dialog button {
+            flex: 1; padding: 8px;
+            background: rgba(34, 197, 94, 0.2);
+            border: 1px solid #22c55e; color: #22c55e;
+            border-radius: 4px; cursor: pointer; font-weight: bold;
+        }
+        .button-group-dialog button:hover { background: rgba(34, 197, 94, 0.4); }
+
+        .panel {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            border-radius: 8px; padding: 12px;
+            backdrop-filter: blur(10px); overflow: auto;
+        }
+
+        .panel-title {
+            font-size: 12px; font-weight: bold; color: #22c55e;
+            margin-bottom: 8px; text-transform: uppercase;
+            border-bottom: 1px solid rgba(34, 197, 94, 0.2); padding-bottom: 6px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+
+        /* ---- GPS (fila completa) ---- */
+        .gps-row { grid-column: 1 / -1; display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+
+        #mapa { width: 100%; height: 320px; border-radius: 6px; border: 1px solid rgba(34, 197, 94, 0.2); background: #0a0f1d; margin-bottom: 8px; }
+        .leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(0.72) saturate(1.5) !important; }
+        .leaflet-container { background: #0a0a12 !important; }
+
+        .gps-badge {
+            margin-bottom: 6px; padding: 6px 10px;
+            background: rgba(0,0,0,0.5); border: 1px solid rgba(34, 197, 94, 0.3);
+            border-radius: 4px; font-size: 11px; color: #22c55e;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .gps-badge.sin-fix { border-color: rgba(255, 170, 0, 0.4); color: #ffaa00; }
+        .gps-dot-pulse { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 8px #22c55e; animation: pulse 1.5s infinite; flex-shrink: 0; }
+        .gps-dot-pulse.sin { background: #ffaa00; box-shadow: 0 0 8px #ffaa00; }
+
+        .gps-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; }
+        .gstat { background: rgba(0,0,0,0.3); border: 1px solid rgba(34, 197, 94, 0.15); border-radius: 4px; padding: 6px 4px; text-align: center; }
+        .gstat-val { font-size: 16px; font-weight: bold; color: #22c55e; }
+        .gstat-lbl { font-size: 9px; color: #64748b; margin-top: 2px; text-transform: uppercase; }
+
+        /* ---- COMPARATIVA GPS vs KALMAN (NUEVO) ---- */
+        .comparativa-panel {
+            background: rgba(34, 197, 94, 0.05);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 8px;
+        }
+
+        .comparativa-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 10px;
+        }
+
+        .comparativa-item {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            border-radius: 3px;
+            padding: 4px 6px;
+        }
+
+        .comparativa-label {
+            color: #94a3b8;
+            font-size: 9px;
+            text-transform: uppercase;
+        }
+
+        .comparativa-value {
+            color: #22c55e;
+            font-weight: bold;
+            font-size: 11px;
+            margin-top: 2px;
+        }
+
+        .comparativa-value.gps-raw {
+            color: #ef4444;
+        }
+
+        .comparativa-value.kalman {
+            color: #22c55e;
+        }
+
+        /* ---- IMU (sin cambios) ---- */
+        #tractor-stage {
+            width: 100%; height: 260px; margin-bottom: 12px;
+            border-radius: 10px;
+            background: radial-gradient(circle at 30% 20%, rgba(56, 189, 248, 0.12), transparent 55%), #0a0f1d;
+            border: 1px solid rgba(255,255,255,0.08);
+            position: relative;
+            overflow: hidden;
+            cursor: grab;
+        }
+        #tractor-stage:active { cursor: grabbing; }
+        #tractor-canvas-container { width: 100%; height: 100%; }
+        #tractor-hint {
+            position: absolute; top: 10px; left: 10px; font-size: 10px; color: #cbd5e1;
+            font-family: 'Courier New', monospace; background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.08);
+            padding: 5px 10px; border-radius: 7px; pointer-events: none;
+        }
+        #tractor-caption {
+            position: absolute; top: 10px; right: 10px; font-size: 10px; color: #22c55e;
+            font-family: 'Courier New', monospace; letter-spacing: 0.5px;
+            background: rgba(15, 23, 42, 0.75); backdrop-filter: blur(6px);
+            border: 1px solid rgba(255,255,255,0.08); padding: 5px 10px; border-radius: 7px;
+            pointer-events: none;
+        }
+        #axis-legend {
+            position: absolute; bottom: 10px; left: 10px; font-size: 10px;
+            font-family: 'Courier New', monospace; background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.08);
+            padding: 8px 10px; border-radius: 7px; pointer-events: none; line-height: 1.9; color: #cbd5e1;
+        }
+        #axis-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .dot-x { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+        .dot-y { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+        .dot-z { background: #3b82f6; box-shadow: 0 0 6px #3b82f6; }
+
+        .parameter-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 0; border-bottom: 1px solid rgba(34, 197, 94, 0.1); font-size: 11px;
+        }
+        .parameter-row:last-child { border-bottom: none; }
+        .parameter-label { color: #94a3b8; flex: 1; }
+        .parameter-value { color: #22c55e; font-weight: bold; text-align: right; min-width: 70px; }
+        .parameter-unit { color: #64748b; font-size: 10px; margin-left: 4px; }
+
+        .cal-bar { display: flex; gap: 2px; height: 16px; margin: 4px 0; }
+        .cal-segment { flex: 1; background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 2px; }
+        .cal-segment.active { background: #22c55e; }
+
+        .compass {
+            width: 100%; aspect-ratio: 1;
+            background: radial-gradient(circle, rgba(34, 197, 94, 0.1), transparent);
+            border: 2px solid rgba(34, 197, 94, 0.3); border-radius: 50%;
+            position: relative; display: flex; align-items: center; justify-content: center; margin: 8px 0;
+        }
+        .compass-needle {
+            width: 4px; height: 60%;
+            background: linear-gradient(180deg, #ef4444, transparent);
+            transform-origin: center bottom; position: absolute; border-radius: 2px;
+        }
+        .compass-center { width: 12px; height: 12px; background: #22c55e; border-radius: 50%; position: absolute; z-index: 10; }
+        .compass-dir { position: absolute; font-size: 10px; font-weight: bold; color: #22c55e; }
+        .compass-dir.n { top: 4px; } .compass-dir.s { bottom: 4px; }
+        .compass-dir.e { right: 4px; } .compass-dir.w { left: 4px; }
+
+        .chart-container { position: relative; height: 150px; margin: 8px 0; }
+
+        #serial-terminal {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(34, 197, 94, 0.2); border-radius: 4px; padding: 8px;
+            font-size: 9px; line-height: 1.4; color: #22c55e;
+            max-height: 220px; overflow-y: auto; font-family: 'Courier New', monospace;
+        }
+        .terminal-line { padding: 2px 0; border-bottom: 1px solid rgba(34, 197, 94, 0.1); }
+        .terminal-line.error { color: #ef4444; }
+        .terminal-line.warning { color: #eab308; }
+        .terminal-line.info { color: #06b6d4; }
+        .terminal-line.kalman { color: #22c55e; font-weight: bold; }
+
+        .button-group { display: flex; gap: 6px; margin-top: 8px; }
+        button {
+            flex: 1; padding: 6px 12px;
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.4); color: #22c55e;
+            border-radius: 4px; font-size: 10px; cursor: pointer;
+            font-family: 'Monaco', monospace; text-transform: uppercase; font-weight: bold;
+            transition: all 0.2s;
+        }
+        button:hover { background: rgba(34, 197, 94, 0.2); border-color: rgba(34, 197, 94, 0.6); box-shadow: 0 0 8px rgba(34, 197, 94, 0.3); }
+        button:active { transform: scale(0.95); }
+
+        .euler-display { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+        .euler-item { background: rgba(34, 197, 94, 0.05); border: 1px solid rgba(34, 197, 94, 0.2); border-radius: 4px; padding: 6px; text-align: center; }
+        .euler-item-label { font-size: 9px; color: #94a3b8; text-transform: uppercase; }
+        .euler-item-value { font-size: 18px; color: #22c55e; font-weight: bold; margin-top: 2px; }
+        .euler-item-unit { font-size: 9px; color: #64748b; }
+
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: rgba(34, 197, 94, 0.1); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: rgba(34, 197, 94, 0.4); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(34, 197, 94, 0.6); }
+
+        .overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); z-index: 999; display: none; }
+        .overlay.visible { display: block; }
+
+        @media (max-width: 1100px) {
+            .container { grid-template-columns: 1fr; }
+            .gps-row { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="overlay" id="overlay"></div>
+
+    <div class="connection-dialog" id="connection-dialog">
+        <h2>⚙️ Conectar a Pico W</h2>
+        <div class="input-group">
+            <label>IP del Pico W (la que imprime en Thonny):</label>
+            <input type="text" id="input-ip" placeholder="192.168.0.13" value="">
+        </div>
+        <div class="button-group-dialog">
+            <button onclick="conectarHTTP()">Conectar</button>
+            <button onclick="usarDemo()">Demo</button>
+        </div>
+        <div style="margin-top: 12px; color: #64748b; font-size: 10px;">
+            <p>💡 El navegador y la Pico W deben estar en la misma red WiFi. Este dashboard consulta http://IP/data (GPS + IMU + KALMAN) cada 300ms.</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <header>
+            <h1>🚜 MICROTRACTOR — GPS + IMU + KALMAN Dashboard</h1>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-dot" id="status-dot"></span>
+                    <span id="status-text">Desconectado</span>
+                </div>
+                <div class="status-item">Datos: <span id="data-count">0</span></div>
+                <div class="status-item">Fallos: <span id="fail-count">0</span></div>
+                <div class="status-item">Latencia: <span id="fps-counter">--</span> ms</div>
+                <div class="status-item">Temp: <span id="temp-display">--</span>°C</div>
+                <div class="status-item">
+                    <button onclick="mostrarConexion()" style="padding: 4px 8px; font-size: 10px;">⚙️ Conectar</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- FILA GPS (arriba, ancho completo) -->
+        <div class="gps-row">
+            <div class="panel">
+                <div class="panel-title">📍 Posición GPS + KALMAN en Tiempo Real</div>
+                <div id="mapa"></div>
+                <div class="gps-badge sin-fix" id="gps-badge">
+                    <div class="gps-dot-pulse sin" id="gps-dot"></div>
+                    <span id="gps-text">🛰 GPS: buscando señal...</span>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">🛰 Estado GPS NEO-8M</div>
+                <div class="gps-stats">
+                    <div class="gstat"><div class="gstat-val" id="sat-count">--</div><div class="gstat-lbl">Sats</div></div>
+                    <div class="gstat"><div class="gstat-val" id="hdop-val">--</div><div class="gstat-lbl">HDOP</div></div>
+                    <div class="gstat"><div class="gstat-val" id="alt-val">--</div><div class="gstat-lbl">Alt (m)</div></div>
+                    <div class="gstat"><div class="gstat-val" id="fix-val">--</div><div class="gstat-lbl">Fix</div></div>
+                </div>
+                <div class="parameter-row"><span class="parameter-label">Latitud</span><span class="parameter-value" id="lat-val">--</span></div>
+                <div class="parameter-row"><span class="parameter-label">Longitud</span><span class="parameter-value" id="lon-val">--</span></div>
+                <div class="parameter-row"><span class="parameter-label">Hora UTC</span><span class="parameter-value" id="hora-val">--</span></div>
+                
+                <!-- NUEVO: Comparativa GPS vs Kalman -->
+                <div class="panel-title" style="margin-top: 12px;">🤖 COMPARATIVA: GPS vs KALMAN</div>
+                <div class="comparativa-panel">
+                    <div class="comparativa-row">
+                        <div class="comparativa-item">
+                            <div class="comparativa-label">GPS RAW</div>
+                            <div class="comparativa-value gps-raw" id="comp-gps-lat">--</div>
+                        </div>
+                        <div class="comparativa-item">
+                            <div class="comparativa-label">KALMAN</div>
+                            <div class="comparativa-value kalman" id="comp-kalman-lat">--</div>
+                        </div>
+                    </div>
+                    <div class="comparativa-row">
+                        <div class="comparativa-item">
+                            <div class="comparativa-label">GPS ALT</div>
+                            <div class="comparativa-value gps-raw" id="comp-gps-alt">--</div>
+                        </div>
+                        <div class="comparativa-item">
+                            <div class="comparativa-label">KALMAN ALT</div>
+                            <div class="comparativa-value kalman" id="comp-kalman-alt">--</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- NUEVO: Velocidad estimada (solo en Kalman) -->
+                <div class="panel-title">📊 VELOCIDAD ESTIMADA (Kalman)</div>
+                <div class="parameter-row"><span class="parameter-label">V Norte</span><span class="parameter-value" id="kalman-v-norte">--</span><span class="parameter-unit">m/s</span></div>
+                <div class="parameter-row"><span class="parameter-label">V Este</span><span class="parameter-value" id="kalman-v-este">--</span><span class="parameter-unit">m/s</span></div>
+                <div class="parameter-row"><span class="parameter-label">V Total</span><span class="parameter-value" id="kalman-v-total">--</span><span class="parameter-unit">m/s</span></div>
+            </div>
+        </div>
+
+        <!-- LEFT PANEL (IMU) -->
+        <div class="panel">
+            <div class="panel-title">📍 Orientación (Euler Angles)</div>
+
+            <div class="euler-display">
+                <div class="euler-item">
+                    <div class="euler-item-label">Yaw</div>
+                    <div class="euler-item-value" id="yaw-display">0.0</div>
+                    <div class="euler-item-unit">°</div>
+                </div>
+                <div class="euler-item">
+                    <div class="euler-item-label">Roll</div>
+                    <div class="euler-item-value" id="roll-display">0.0</div>
+                    <div class="euler-item-unit">°</div>
+                </div>
+            </div>
+
+            <div class="euler-item" style="grid-column: 1 / -1;">
+                <div class="euler-item-label">Pitch</div>
+                <div class="euler-item-value" id="pitch-display">0.0</div>
+                <div class="euler-item-unit">°</div>
+            </div>
+
+            <div class="compass">
+                <div class="compass-needle" id="compass-needle"></div>
+                <div class="compass-center"></div>
+                <div class="compass-dir n">N</div>
+                <div class="compass-dir s">S</div>
+                <div class="compass-dir e">E</div>
+                <div class="compass-dir w">W</div>
+            </div>
+
+            <div class="panel-title" style="margin-top: 12px;">📊 Calibración</div>
+
+            <div class="parameter-row"><span class="parameter-label">Sistema</span><span class="parameter-value" id="cal-sys">0/3</span></div>
+            <div class="parameter-row"><span class="parameter-label">Giroscopio</span><span class="parameter-value" id="cal-gyr">0/3</span></div>
+            <div class="parameter-row"><span class="parameter-label">Acelerómetro</span><span class="parameter-value" id="cal-acc">0/3</span></div>
+            <div class="parameter-row"><span class="parameter-label">Magnetómetro</span><span class="parameter-value" id="cal-mag">0/3</span></div>
+
+            <div class="cal-bar" id="cal-bar-overall">
+                <div class="cal-segment"></div>
+                <div class="cal-segment"></div>
+                <div class="cal-segment"></div>
+                <div class="cal-segment"></div>
+            </div>
+
+            <div class="button-group">
+                <button id="btn-reset">Reset</button>
+                <button id="btn-clear-log">Limpiar</button>
+            </div>
+        </div>
+
+        <!-- CENTER PANEL (IMU 3D) -->
+        <div class="panel">
+            <div class="panel-title">🎮 Sensor 3D — Orientación en Tiempo Real</div>
+            <div id="tractor-stage">
+                <div id="tractor-canvas-container"></div>
+                <div id="tractor-hint">🖱 Arrastra con ratón/táctil para rotar cámara 3D</div>
+                <div id="tractor-caption">esperando datos...</div>
+                <div id="axis-legend">
+                    <div><span class="dot dot-x"></span>Eje X (Roll / Alabeo)</div>
+                    <div><span class="dot dot-y"></span>Eje Y (Yaw / Brújula)</div>
+                    <div><span class="dot dot-z"></span>Eje Z (Pitch / Cabeceo)</div>
+                </div>
+            </div>
+
+            <div class="panel-title">⚡ Aceleración & Giroscopio</div>
+            <div class="parameter-row"><span class="parameter-label">Acc X</span><span class="parameter-value" id="acc-x">0.00</span><span class="parameter-unit">m/s²</span></div>
+            <div class="parameter-row"><span class="parameter-label">Acc Y</span><span class="parameter-value" id="acc-y">0.00</span><span class="parameter-unit">m/s²</span></div>
+            <div class="parameter-row"><span class="parameter-label">Acc Z</span><span class="parameter-value" id="acc-z">0.00</span><span class="parameter-unit">m/s²</span></div>
+
+            <div class="panel-title" style="margin-top: 12px;">🔄 Velocidad Angular</div>
+            <div class="parameter-row"><span class="parameter-label">Gyr X</span><span class="parameter-value" id="gyr-x">0.00</span><span class="parameter-unit">°/s</span></div>
+            <div class="parameter-row"><span class="parameter-label">Gyr Y</span><span class="parameter-value" id="gyr-y">0.00</span><span class="parameter-unit">°/s</span></div>
+            <div class="parameter-row"><span class="parameter-label">Gyr Z</span><span class="parameter-value" id="gyr-z">0.00</span><span class="parameter-unit">°/s</span></div>
+
+            <div class="panel-title" style="margin-top: 12px;">🧲 Campo Magnético</div>
+            <div class="parameter-row"><span class="parameter-label">Mag X</span><span class="parameter-value" id="mag-x">0</span><span class="parameter-unit">µT</span></div>
+            <div class="parameter-row"><span class="parameter-label">Mag Y</span><span class="parameter-value" id="mag-y">0</span><span class="parameter-unit">µT</span></div>
+            <div class="parameter-row"><span class="parameter-label">Mag Z</span><span class="parameter-value" id="mag-z">0</span><span class="parameter-unit">µT</span></div>
+        </div>
+
+        <!-- RIGHT PANEL (Gráficos + Terminal) -->
+        <div class="panel">
+            <div class="panel-title">📈 Gráficos en Tiempo Real</div>
+            <div class="chart-container"><canvas id="chart-euler"></canvas></div>
+            <div class="chart-container"><canvas id="chart-accel"></canvas></div>
+
+            <div class="panel-title" style="margin-top: 12px;">📡 Terminal (KALMAN)</div>
+            <div id="serial-terminal"></div>
+
+            <div class="button-group">
+                <button id="btn-export">Exportar</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════════
+        // VARIABLES GLOBALES
+        // ═══════════════════════════════════════════════════════════════
+        let picoIP = null;
+        let pollingInterval = null;
+        let demoMode = false;
+        let failCount = 0;
+        let consultaEnCurso = false;
+
+        const chartConfigs = {
+            euler: { yaw: [], roll: [], pitch: [] },
+            accel: { x: [], y: [], z: [] }
+        };
+
+        let charts = {};
+        let dataCount = 0;
+
+        // ── GPS: mapa ──
+        const ORIGEN = [-16.5034, -68.1193]; // La Paz, Bolivia
+        let mapa, mRobotGPS, mRobotKalman;
+        let vistaCentradaInicial = false;
+
+        // ═══════════════════════════════════════════════════════════════
+        // TRACTOR 3D (Three.js)
+        // ═══════════════════════════════════════════════════════════════
+        let scene3d, camera3d, renderer3d, controls3d, tractorGroup;
+
+        function init3D() {
+            const container = document.getElementById('tractor-canvas-container');
+            const w = container.clientWidth, h = container.clientHeight;
+
+            scene3d = new THREE.Scene();
+            scene3d.background = new THREE.Color(0x0a1220);
+
+            camera3d = new THREE.PerspectiveCamera(45, w / h, 0.1, 100);
+            camera3d.position.set(3.2, 2.4, 3.6);
+
+            renderer3d = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer3d.setSize(w, h);
+            renderer3d.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer3d.domElement);
+
+            controls3d = new THREE.OrbitControls(camera3d, renderer3d.domElement);
+            controls3d.enableDamping = true;
+            controls3d.dampingFactor = 0.08;
+            controls3d.minDistance = 2;
+            controls3d.maxDistance = 12;
+
+            scene3d.add(new THREE.AmbientLight(0xffffff, 0.75));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            dirLight.position.set(4, 6, 3);
+            scene3d.add(dirLight);
+
+            const acento = new THREE.PointLight(0x38bdf8, 1.4, 8);
+            acento.position.set(-2, 1.5, -1.5);
+            scene3d.add(acento);
+
+            const grid = new THREE.GridHelper(8, 8, 0x1e3a2a, 0x14251d);
+            grid.position.y = -0.9;
+            scene3d.add(grid);
+
+            tractorGroup = construirTractor();
+            scene3d.add(tractorGroup);
+
+            window.addEventListener('resize', () => {
+                const w2 = container.clientWidth, h2 = container.clientHeight;
+                camera3d.aspect = w2 / h2;
+                camera3d.updateProjectionMatrix();
+                renderer3d.setSize(w2, h2);
+            });
+
+            animate3d();
+        }
+
+        function construirTractor() {
+            const group = new THREE.Group();
+
+            const verdeCabina = new THREE.MeshStandardMaterial({ color: 0x22c55e, roughness: 0.4, metalness: 0.15 });
+            const verdeOscuro  = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.5 });
+            const negroLlanta  = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.9 });
+            const grisMetal    = new THREE.MeshStandardMaterial({ color: 0x9ca3af, metalness: 0.6, roughness: 0.3 });
+            const vidrio       = new THREE.MeshStandardMaterial({ color: 0x67e8f9, transparent: true, opacity: 0.35, roughness: 0.1 });
+
+            const capo = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.5, 0.65), verdeCabina);
+            capo.position.set(0.75, 0.05, 0);
+            group.add(capo);
+
+            const cabina = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.85, 0.7), verdeCabina);
+            cabina.position.set(-0.35, 0.35, 0);
+            group.add(cabina);
+
+            const ventana = new THREE.Mesh(new THREE.BoxGeometry(0.87, 0.5, 0.72), vidrio);
+            ventana.position.set(-0.35, 0.45, 0);
+            group.add(ventana);
+
+            const techo = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.06, 0.8), verdeOscuro);
+            techo.position.set(-0.35, 0.79, 0);
+            group.add(techo);
+
+            const escape = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.55, 12), grisMetal);
+            escape.position.set(0.55, 0.55, 0.22);
+            group.add(escape);
+
+            const ruedaTraseraGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.28, 20);
+            [-1, 1].forEach(signo => {
+                const rueda = new THREE.Mesh(ruedaTraseraGeo, negroLlanta);
+                rueda.rotation.z = Math.PI / 2;
+                rueda.position.set(-0.4, -0.35, signo * 0.48);
+                group.add(rueda);
+            });
+
+            const ruedaDelanteraGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.2, 16);
+            [-1, 1].forEach(signo => {
+                const rueda = new THREE.Mesh(ruedaDelanteraGeo, negroLlanta);
+                rueda.rotation.z = Math.PI / 2;
+                rueda.position.set(0.85, -0.5, signo * 0.4);
+                group.add(rueda);
+            });
+
+            const largoEje = 1.7, largoPunta = 0.32, anchoPunta = 0.16;
+            const flechaX = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0.15, 0), largoEje, 0xef4444, largoPunta, anchoPunta);
+            const flechaY = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0.15, 0), largoEje, 0x22c55e, largoPunta, anchoPunta);
+            const flechaZ = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0.15, 0), largoEje, 0x3b82f6, largoPunta, anchoPunta);
+            group.add(flechaX, flechaY, flechaZ);
+
+            group.scale.set(0.9, 0.9, 0.9);
+            return group;
+        }
+
+        function animate3d() {
+            requestAnimationFrame(animate3d);
+            if (controls3d) controls3d.update();
+            if (renderer3d && scene3d && camera3d) renderer3d.render(scene3d, camera3d);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // MAPA GPS (Leaflet)
+        // ═══════════════════════════════════════════════════════════════
+        function initMapa() {
+            mapa = L.map('mapa', { zoomControl: true, attributionControl: false }).setView(ORIGEN, 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(mapa);
+            L.marker(ORIGEN, { icon: dotIcon('#00f5ff') }).addTo(mapa)
+                .bindPopup('<b style="color:#00f5ff">🤖 Base ATLAS (UMSA)</b>');
+        }
+
+        function dotIcon(color) {
+            return L.divIcon({
+                className: '',
+                html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid rgba(255,255,255,0.7);box-shadow:0 0 10px ${color},0 0 20px ${color}"></div>`,
+                iconAnchor: [6, 6]
+            });
+        }
+
+        function gpsIcon() {
+            return L.divIcon({
+                className: '',
+                html: `<div style="font-size:24px;line-height:1;filter:drop-shadow(0 0 8px #ef4444);">🛰</div>`,
+                iconAnchor: [12, 12]
+            });
+        }
+
+        function kalmanIcon() {
+            return L.divIcon({
+                className: '',
+                html: `<div style="font-size:28px;line-height:1;filter:drop-shadow(0 0 10px #22c55e) drop-shadow(0 0 4px #fff);">🚜</div>`,
+                iconAnchor: [14, 14]
+            });
+        }
+
+        function actualizarGPS(d) {
+            const badge = document.getElementById('gps-badge');
+            const dot = document.getElementById('gps-dot');
+            const txt = document.getElementById('gps-text');
+
+            document.getElementById('sat-count').textContent = d.satelites;
+            document.getElementById('hdop-val').textContent = d.hdop.toFixed(1);
+            document.getElementById('alt-val').textContent = d.altitud.toFixed(0);
+            document.getElementById('fix-val').textContent = d.valido ? '✓' : '✗';
+            document.getElementById('lat-val').textContent = d.lat.toFixed(6);
+            document.getElementById('lon-val').textContent = d.lon.toFixed(6);
+            document.getElementById('hora-val').textContent = d.hora;
+
+            if (d.valido && d.lat !== 0 && d.lon !== 0) {
+                badge.className = 'gps-badge';
+                dot.className = 'gps-dot-pulse';
+                txt.textContent = `🛰 GPS OK · ${d.lat.toFixed(5)}, ${d.lon.toFixed(5)} · ${d.satelites} sats`;
+
+                const coords = [d.lat, d.lon];
+                if (!mRobotGPS) {
+                    mRobotGPS = L.marker(coords, { icon: gpsIcon() }).addTo(mapa)
+                        .bindPopup(`<b style="color:#ef4444">🛰 GPS RAW</b><br>${d.lat.toFixed(6)}, ${d.lon.toFixed(6)}<br>Sats: ${d.satelites}`);
+                } else {
+                    mRobotGPS.setLatLng(coords);
+                }
+
+                if (!vistaCentradaInicial) {
+                    mapa.setView(coords, 16);
+                    vistaCentradaInicial = true;
+                }
+            } else {
+                badge.className = 'gps-badge sin-fix';
+                dot.className = 'gps-dot-pulse sin';
+                txt.textContent = `🛰 GPS: buscando señal (${d.satelites} sats)`;
+            }
+        }
+
+        function actualizarKalman(d) {
+            if (!d.kalman_fusion) return;
+
+            const k = d.kalman_fusion.posicion;
+            const v = d.kalman_fusion.velocidad;
+
+            // Actualiza comparativa
+            document.getElementById('comp-gps-lat').textContent = d.lat.toFixed(5) + '°';
+            document.getElementById('comp-kalman-lat').textContent = k.lat.toFixed(5) + '°';
+            document.getElementById('comp-gps-alt').textContent = d.altitud.toFixed(1) + 'm';
+            document.getElementById('comp-kalman-alt').textContent = k.alt.toFixed(1) + 'm';
+
+            // Actualiza velocidad
+            document.getElementById('kalman-v-norte').textContent = v.norte.toFixed(2);
+            document.getElementById('kalman-v-este').textContent = v.este.toFixed(2);
+            const v_total = Math.sqrt(v.norte**2 + v.este**2);
+            document.getElementById('kalman-v-total').textContent = v_total.toFixed(2);
+
+            // Actualiza marcador en mapa
+            const coords = [k.lat, k.lon];
+            if (!mRobotKalman) {
+                mRobotKalman = L.marker(coords, { icon: kalmanIcon() }).addTo(mapa)
+                    .bindPopup(`<b style="color:#22c55e">🚜 KALMAN FUSION</b><br>${k.lat.toFixed(6)}, ${k.lon.toFixed(6)}<br>V: ${v_total.toFixed(2)} m/s`);
+            } else {
+                mRobotKalman.setLatLng(coords);
+                mRobotKalman.setPopupContent(`<b style="color:#22c55e">🚜 KALMAN FUSION</b><br>${k.lat.toFixed(6)}, ${k.lon.toFixed(6)}<br>V: ${v_total.toFixed(2)} m/s`);
+            }
+
+            addTerminalLine(`[KALMAN] Lat:${k.lat.toFixed(5)} Lon:${k.lon.toFixed(5)} v:${v_total.toFixed(2)}m/s`, 'kalman');
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // INTERFAZ DE CONEXIÓN
+        // ═══════════════════════════════════════════════════════════════
+        function mostrarConexion() {
+            document.getElementById('connection-dialog').classList.remove('hidden');
+            document.getElementById('overlay').classList.add('visible');
+        }
+        function ocultarConexion() {
+            document.getElementById('connection-dialog').classList.add('hidden');
+            document.getElementById('overlay').classList.remove('visible');
+        }
+
+        function conectarHTTP() {
+            const ip = document.getElementById('input-ip').value.trim();
+            if (!ip) {
+                addTerminalLine('[ERR] Ingresa la IP del Pico W', 'error');
+                return;
+            }
+            picoIP = ip;
+            localStorage.setItem('pico_ip', ip);
+            demoMode = false;
+            failCount = 0;
+            document.getElementById('fail-count').textContent = '0';
+
+            addTerminalLine(`[SYS] Conectando a http://${ip}/data ...`, 'info');
+            document.getElementById('status-text').textContent = 'Conectando...';
+
+            clearInterval(pollingInterval);
+            consultarPico();
+            pollingInterval = setInterval(consultarPico, 300);
+            ocultarConexion();
+        }
+
+        async function consultarPico() {
+            if (!picoIP || demoMode) return;
+            if (consultaEnCurso) return;
+            consultaEnCurso = true;
+
+            const inicio = Date.now();
+            try {
+                const r = await fetch(`http://${picoIP}/data`, { signal: AbortSignal.timeout(2500) });
+                const d = await r.json();
+                const ms = Date.now() - inicio;
+                document.getElementById('fps-counter').textContent = ms;
+
+                document.getElementById('status-dot').classList.add('connected');
+                document.getElementById('status-text').textContent = 'Conectado (HTTP)';
+
+                actualizarGPS(d.gps);
+
+                if (d.imu && d.imu.conectado) {
+                    updateData({
+                        euler: d.imu.euler,
+                        acelerometro: d.imu.acelerometro,
+                        giroscopio: d.imu.giroscopio,
+                        magnetometro: d.imu.magnetometro,
+                        temperatura: d.imu.temperatura,
+                        calibracion: d.imu.calibracion
+                    });
+                    
+                    // NUEVO: Actualiza Kalman
+                    actualizarKalman(d.gps);
+                    if (d.imu.kalman_fusion) {
+                        actualizarKalman(d.imu.kalman_fusion);
+                    }
+                } else {
+                    addTerminalLine('[WARN] IMU no detectado', 'warning');
+                }
+
+            } catch (e) {
+                failCount++;
+                document.getElementById('fail-count').textContent = failCount;
+                document.getElementById('status-dot').classList.remove('connected');
+                document.getElementById('status-text').textContent = 'Sin conexión';
+                addTerminalLine(`[ERR] No se pudo conectar a ${picoIP}`, 'error');
+            } finally {
+                consultaEnCurso = false;
+            }
+        }
+
+        function usarDemo() {
+            addTerminalLine('[SYS] Modo DEMO activado', 'info');
+            document.getElementById('status-text').textContent = 'DEMO (simulado)';
+            document.getElementById('status-dot').classList.add('connected');
+            demoMode = true;
+            clearInterval(pollingInterval);
+            ocultarConexion();
+            simulateData();
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // GRÁFICOS
+        // ═══════════════════════════════════════════════════════════════
+        function initCharts() {
+            const commonOptions = {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#94a3b8', font: { size: 10 } } } },
+                scales: {
+                    y: { ticks: { color: '#94a3b8', font: { size: 9 } }, grid: { color: 'rgba(34, 197, 94, 0.1)' }, beginAtZero: true },
+                    x: { ticks: { color: '#94a3b8', font: { size: 9 } }, grid: { color: 'rgba(34, 197, 94, 0.1)' } }
+                }
+            };
+
+            charts.euler = new Chart(document.getElementById('chart-euler'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'Yaw', data: chartConfigs.euler.yaw, borderColor: '#22c55e', tension: 0.1 },
+                        { label: 'Roll', data: chartConfigs.euler.roll, borderColor: '#06b6d4', tension: 0.1 },
+                        { label: 'Pitch', data: chartConfigs.euler.pitch, borderColor: '#f97316', tension: 0.1 }
+                    ]
+                },
+                options: commonOptions
+            });
+
+            charts.accel = new Chart(document.getElementById('chart-accel'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'Acc X', data: chartConfigs.accel.x, borderColor: '#22c55e', tension: 0.1 },
+                        { label: 'Acc Y', data: chartConfigs.accel.y, borderColor: '#06b6d4', tension: 0.1 },
+                        { label: 'Acc Z', data: chartConfigs.accel.z, borderColor: '#f97316', tension: 0.1 }
+                    ]
+                },
+                options: commonOptions
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // ACTUALIZAR DATOS IMU
+        // ═══════════════════════════════════════════════════════════════
+        function updateData(datos) {
+            dataCount++;
+            document.getElementById('data-count').textContent = dataCount;
+
+            const yaw = datos.euler.yaw;
+            const roll = datos.euler.roll;
+            const pitch = datos.euler.pitch;
+
+            document.getElementById('yaw-display').textContent = yaw.toFixed(1);
+            document.getElementById('roll-display').textContent = roll.toFixed(1);
+            document.getElementById('pitch-display').textContent = pitch.toFixed(1);
+
+            if (tractorGroup) {
+                const yawRad = THREE.MathUtils.degToRad(-yaw);
+                const pitchRad = THREE.MathUtils.degToRad(pitch);
+                const rollRad = THREE.MathUtils.degToRad(roll);
+                const euler = new THREE.Euler(pitchRad, yawRad, rollRad, 'YXZ');
+                tractorGroup.quaternion.setFromEuler(euler);
+            }
+            document.getElementById('tractor-caption').textContent =
+                `Yaw ${yaw.toFixed(0)}° · Roll ${roll.toFixed(0)}° · Pitch ${pitch.toFixed(0)}°`;
+
+            const needle = document.getElementById('compass-needle');
+            if (needle) needle.style.transform = `rotate(${yaw}deg)`;
+
+            document.getElementById('acc-x').textContent = datos.acelerometro.x.toFixed(2);
+            document.getElementById('acc-y').textContent = datos.acelerometro.y.toFixed(2);
+            document.getElementById('acc-z').textContent = datos.acelerometro.z.toFixed(2);
+
+            document.getElementById('gyr-x').textContent = datos.giroscopio.x.toFixed(2);
+            document.getElementById('gyr-y').textContent = datos.giroscopio.y.toFixed(2);
+            document.getElementById('gyr-z').textContent = datos.giroscopio.z.toFixed(2);
+
+            document.getElementById('mag-x').textContent = datos.magnetometro.x;
+            document.getElementById('mag-y').textContent = datos.magnetometro.y;
+            document.getElementById('mag-z').textContent = datos.magnetometro.z;
+
+            document.getElementById('temp-display').textContent = datos.temperatura.toFixed ? datos.temperatura.toFixed(0) : datos.temperatura;
+
+            const cal = datos.calibracion;
+            document.getElementById('cal-sys').textContent = `${cal.sistem}/3`;
+            document.getElementById('cal-gyr').textContent = `${cal.giro}/3`;
+            document.getElementById('cal-acc').textContent = `${cal.acele}/3`;
+            document.getElementById('cal-mag').textContent = `${cal.mag}/3`;
+
+            const cals = [cal.sistem, cal.giro, cal.acele, cal.mag];
+            document.querySelectorAll('#cal-bar-overall .cal-segment').forEach((seg, i) => {
+                if (cals[i] >= 3) seg.classList.add('active');
+                else seg.classList.remove('active');
+            });
+
+            const maxPoints = 50;
+            if (chartConfigs.euler.yaw.length >= maxPoints) {
+                chartConfigs.euler.yaw.shift();
+                chartConfigs.euler.roll.shift();
+                chartConfigs.euler.pitch.shift();
+                chartConfigs.accel.x.shift();
+                chartConfigs.accel.y.shift();
+                chartConfigs.accel.z.shift();
+                if (charts.euler.data.labels.length > 0) charts.euler.data.labels.shift();
+                if (charts.accel.data.labels.length > 0) charts.accel.data.labels.shift();
+            }
+
+            chartConfigs.euler.yaw.push(yaw);
+            chartConfigs.euler.roll.push(roll);
+            chartConfigs.euler.pitch.push(pitch);
+            chartConfigs.accel.x.push(datos.acelerometro.x);
+            chartConfigs.accel.y.push(datos.acelerometro.y);
+            chartConfigs.accel.z.push(datos.acelerometro.z);
+
+            charts.euler.data.labels.push(dataCount);
+            charts.accel.data.labels.push(dataCount);
+            charts.euler.update('none');
+            charts.accel.update('none');
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // TERMINAL
+        // ═══════════════════════════════════════════════════════════════
+        function addTerminalLine(text, type = 'info') {
+            const terminal = document.getElementById('serial-terminal');
+            const line = document.createElement('div');
+            line.className = `terminal-line ${type}`;
+            line.textContent = text;
+            terminal.appendChild(line);
+            terminal.scrollTop = terminal.scrollHeight;
+            while (terminal.children.length > 100) terminal.removeChild(terminal.firstChild);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // EVENTOS
+        // ═══════════════════════════════════════════════════════════════
+        document.getElementById('btn-clear-log').addEventListener('click', () => {
+            document.getElementById('serial-terminal').innerHTML = '';
+            addTerminalLine('[SYS] Terminal limpiada.', 'info');
+        });
+
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            dataCount = 0;
+            failCount = 0;
+            document.getElementById('data-count').textContent = '0';
+            document.getElementById('fail-count').textContent = '0';
+            addTerminalLine('[SYS] Contador reseteado.', 'warning');
+        });
+
+        document.getElementById('btn-export').addEventListener('click', () => {
+            const data = {
+                euler: chartConfigs.euler,
+                accel: chartConfigs.accel,
+                dataCount: dataCount,
+                timestamp: new Date().toISOString()
+            };
+            const json = JSON.stringify(data, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `kalman-export-${Date.now()}.json`;
+            a.click();
+            addTerminalLine('[SYS] Datos exportados.', 'info');
+        });
+
+        // ═══════════════════════════════════════════════════════════════
+        // DATOS DE DEMO (GPS + IMU + KALMAN simulados)
+        // ═══════════════════════════════════════════════════════════════
+        function simulateData() {
+            const baseYaw = Math.random() * 360;
+            const baseRoll = (Math.random() - 0.5) * 30;
+            const basePitch = (Math.random() - 0.5) * 30;
+            let demoLat = -16.5034, demoLon = -68.1193;
+            let demoLatKalman = demoLat, demoLonKalman = demoLon;
+
+            pollingInterval = setInterval(() => {
+                if (!demoMode) return;
+
+                demoLat += (Math.random() - 0.5) * 0.0003;
+                demoLon += (Math.random() - 0.5) * 0.0003;
+                demoLatKalman += (Math.random() - 0.5) * 0.00015;  // Más suave
+                demoLonKalman += (Math.random() - 0.5) * 0.00015;
+
+                actualizarGPS({
+                    lat: demoLat, lon: demoLon, altitud: 3640 + Math.random() * 5,
+                    satelites: 8, hdop: 1.2, hora: new Date().toISOString().substr(11, 8),
+                    valido: true
+                });
+
+                const datos = {
+                    euler: {
+                        yaw: (baseYaw + Math.sin(Date.now() / 1000) * 20) % 360,
+                        roll: baseRoll + Math.sin(Date.now() / 800) * 5,
+                        pitch: basePitch + Math.cos(Date.now() / 1200) * 5
+                    },
+                    acelerometro: {
+                        x: Math.sin(Date.now() / 500) * 9.8,
+                        y: Math.cos(Date.now() / 600) * 9.8,
+                        z: 9.8 + Math.sin(Date.now() / 400) * 2
+                    },
+                    giroscopio: {
+                        x: Math.sin(Date.now() / 400) * 30,
+                        y: Math.cos(Date.now() / 500) * 30,
+                        z: Math.sin(Date.now() / 600) * 30
+                    },
+                    magnetometro: {
+                        x: Math.round(Math.sin(Date.now() / 1000) * 50),
+                        y: Math.round(Math.cos(Date.now() / 1200) * 50),
+                        z: Math.round(Math.sin(Date.now() / 800) * 50)
+                    },
+                    temperatura: 25 + Math.sin(Date.now() / 5000) * 5,
+                    calibracion: { sistem: 3, giro: 3, acele: 3, mag: 3 }
+                };
+                updateData(datos);
+
+                // Simula Kalman
+                const v_norte = Math.sin(Date.now() / 1000) * 0.5;
+                const v_este = Math.cos(Date.now() / 1200) * 0.5;
+                const kalmanGPS = {
+                    lat: demoLatKalman,
+                    lon: demoLonKalman,
+                    altitud: 3641 + Math.sin(Date.now() / 5000) * 2,
+                    kalman_fusion: {
+                        posicion: {
+                            lat: demoLatKalman,
+                            lon: demoLonKalman,
+                            alt: 3641
+                        },
+                        velocidad: {
+                            norte: v_norte,
+                            este: v_este
+                        }
+                    }
+                };
+                actualizarKalman(kalmanGPS);
+            }, 300);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // INICIALIZACIÓN
+        // ═══════════════════════════════════════════════════════════════
+        window.addEventListener('load', () => {
+            initMapa();
+            init3D();
+            initCharts();
+            addTerminalLine('[SYS] Dashboard KALMAN FUSION inicializado.', 'info');
+            addTerminalLine('[SYS] Esperando conexión o Demo Mode...', 'info');
+
+            const savedIP = localStorage.getItem('pico_ip');
+            if (savedIP) {
+                document.getElementById('input-ip').value = savedIP;
+                setTimeout(conectarHTTP, 500);
+            } else {
+                mostrarConexion();
+            }
+        });
+    </script>
+</body>
+</html>
